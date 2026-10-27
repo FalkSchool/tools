@@ -1,1 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scope</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font: 13px system-ui, sans-serif; }
+  video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #bar {
+    position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 6px; padding: 6px; border-radius: 8px;
+    background: rgba(30,30,30,.85); transition: opacity .3s;
+  }
+  #bar.hide { opacity: 0; pointer-events: none; }
+  select, button {
+    font: inherit; color: #eee; background: #444; border: 0; border-radius: 5px; padding: 5px 9px;
+  }
+  button:hover, select:hover { background: #555; }
+  #msg { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+         color: #aaa; text-align: center; padding: 2em; }
+  body.hidecursor { cursor: none; }
+  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+  #flash.go { animation: flash .25s ease-out; }
+  @keyframes flash { from { opacity: .7; } to { opacity: 0; } }
+  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+           padding: 6px 14px; border-radius: 8px; background: rgba(30,30,30,.9); color: #eee;
+           opacity: 0; pointer-events: none; transition: opacity .25s; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<video id="v" autoplay playsinline muted></video>
+<div id="msg"></div>
+<div id="flash"></div>
+<div id="toast"></div>
+<div id="bar">
+  <select id="cam"></select>
+  <button id="mirror" title="Mirror (M)">Mirror</button>
+  <button id="flip" title="Flip upside-down (V)">Flip</button>
+  <button id="rot" title="Rotate 90° (R)">Rotate</button>
+  <button id="fs" title="Fullscreen (F)">Fullscreen</button>
+</div>
 
+<script>
+const v = document.getElementById('v');
+const bar = document.getElementById('bar');
+const sel = document.getElementById('cam');
+const msg = document.getElementById('msg');
+let stream = null, mirror = false, flip = false, rot = 0;
+
+function showMsg(t) { msg.textContent = t; msg.style.display = t ? 'flex' : 'none'; }
+
+function applyTransform() {
+  const sx = mirror ? -1 : 1, sy = flip ? -1 : 1;
+  v.style.transform = `rotate(${rot}deg) scale(${sx}, ${sy})`;
+  // when rotated 90/270, swap the box so the image still fills the screen
+  if (rot % 180) {
+    v.style.width = '100vh'; v.style.height = '100vw';
+    v.style.inset = 'auto'; v.style.left = '50%'; v.style.top = '50%';
+    v.style.transform = `translate(-50%, -50%) rotate(${rot}deg) scale(${sx}, ${sy})`;
+  } else {
+    v.style.width = '100%'; v.style.height = '100%';
+    v.style.inset = '0'; v.style.left = ''; v.style.top = '';
+  }
+}
+
+async function start(deviceId) {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  showMsg('');
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        width: { ideal: 4096 }, height: { ideal: 2160 }   // ask for the biggest the scope offers
+      },
+      audio: false
+    });
+    v.srcObject = stream;
+  } catch (e) {
+    showMsg('Could not open camera: ' + e.name + '\n\nCheck that the microscope is plugged in and that the browser has camera permission (System Settings → Privacy & Security → Camera).');
+  }
+}
+
+async function listCams() {
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+  const current = stream && stream.getVideoTracks()[0].getSettings().deviceId;
+  sel.innerHTML = '';
+  devs.forEach((d, i) => {
+    const o = document.createElement('option');
+    o.value = d.deviceId;
+    o.textContent = d.label || ('Camera ' + (i + 1));
+    if (d.deviceId === current) o.selected = true;
+    sel.appendChild(o);
+  });
+}
+
+function toggleFS() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch(() => {});
+}
+
+function toast(t) {
+  const el = document.getElementById('toast');
+  el.textContent = t; el.classList.add('show');
+  clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), 1800);
+}
+
+// Copy the current frame to the clipboard at the camera's full resolution,
+// with the same mirror / flip / rotate the viewer is showing.
+async function snap() {
+  if (!v.videoWidth) return;
+  const swap = rot % 180;
+  const c = document.createElement('canvas');
+  c.width  = swap ? v.videoHeight : v.videoWidth;
+  c.height = swap ? v.videoWidth  : v.videoHeight;
+  const ctx = c.getContext('2d');
+  ctx.translate(c.width / 2, c.height / 2);
+  ctx.rotate(rot * Math.PI / 180);
+  ctx.scale(mirror ? -1 : 1, flip ? -1 : 1);
+  ctx.drawImage(v, -v.videoWidth / 2, -v.videoHeight / 2);
+
+  const f = document.getElementById('flash');
+  f.classList.remove('go'); void f.offsetWidth; f.classList.add('go');
+
+  try {
+    await navigator.clipboard.write([
+      new ClipboardItem({ 'image/png': new Promise(res => c.toBlob(res, 'image/png')) })
+    ]);
+    toast('Copied to clipboard');
+  } catch (e) {
+    toast('Could not copy (' + e.name + ')');
+  }
+}
+
+sel.onchange = () => { start(sel.value); sel.blur(); };
+document.getElementById('mirror').onclick = () => { mirror = !mirror; applyTransform(); };
+document.getElementById('flip').onclick   = () => { flip = !flip; applyTransform(); };
+document.getElementById('rot').onclick    = () => { rot = (rot + 90) % 360; applyTransform(); };
+document.getElementById('fs').onclick     = toggleFS;
+v.ondblclick = toggleFS;
+
+document.addEventListener('keydown', e => {
+  if (e.target === sel) return;
+  if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) snap(); return; }
+  const k = e.key.toLowerCase();
+  if (k === 'f') toggleFS();
+  if (k === 'm') { mirror = !mirror; applyTransform(); }
+  if (k === 'v') { flip = !flip; applyTransform(); }
+  if (k === 'r') { rot = (rot + 90) % 360; applyTransform(); }
+});
+
+// auto-hide controls and cursor when the mouse is idle
+let idle;
+function wake() {
+  bar.classList.remove('hide'); document.body.classList.remove('hidecursor');
+  clearTimeout(idle);
+  idle = setTimeout(() => { bar.classList.add('hide'); document.body.classList.add('hidecursor'); }, 2500);
+}
+document.addEventListener('mousemove', wake);
+wake();
+
+navigator.mediaDevices.addEventListener('devicechange', listCams);
+
+(async () => {
+  if (!navigator.mediaDevices) { showMsg('Camera access is not available here. Try opening this file in Chrome.'); return; }
+  await start();       // need permission first so device names show up
+  await listCams();
+})();
+</script>
+</body>
+</html>
